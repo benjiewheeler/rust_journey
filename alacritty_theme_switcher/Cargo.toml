@@ -5,5 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.95"
+fuzzy-matcher = "0.3.7"
 ratatui = "0.29.0"
+toml = "0.8.20"
 xdg = "2.5.2"

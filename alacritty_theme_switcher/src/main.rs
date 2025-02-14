@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
@@ -10,6 +11,7 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 use std::{env, fs, path::PathBuf};
+use toml::{Table, Value};
 
 fn main() -> Result<()> {
     let mut terminal = ratatui::init();
@@ -21,23 +23,28 @@ fn main() -> Result<()> {
 
 #[derive(Default, Debug)]
 pub struct ThemeChanger {
-    config_path: PathBuf,
-    themes: Vec<PathBuf>,
-
-    input: String,
-    character_index: usize,
-    state: ListState,
-
-    exit: bool,
+    config_path: PathBuf,   // Path to the config file.
+    config_table: Table,    // Table containing the config file contents.
+    themes: Vec<PathBuf>,   // List of themes found in the themes directory.
+    input: String,          // The value of the search input field.
+    character_index: usize, // The index of the cursor in the input field.
+    state: ListState,       // The state of the list widget.
+    exit: bool,             // Whether the app should exit.
 }
 
 impl ThemeChanger {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         self.config_path = self.find_config()?;
+        self.config_table = self.read_config()?;
         self.themes = self.scan_themes()?;
+
+        // select the first theme
+        self.state.select_first();
+        self.update_theme();
 
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
+            self.update_theme();
             self.handle_events()?;
         }
 
@@ -62,13 +69,11 @@ impl ThemeChanger {
     fn handle_key_event(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char(to_insert) => self.enter_char(to_insert),
-            // KeyCode::Enter => self.submit_message(),
+            KeyCode::Enter => self.exit(false),
             KeyCode::Backspace => self.delete_char(),
             KeyCode::Up => self.select_previous(),
             KeyCode::Down => self.select_next(),
-            KeyCode::Left => self.move_cursor_left(),
-            KeyCode::Right => self.move_cursor_right(),
-            KeyCode::Esc => self.exit(),
+            KeyCode::Esc => self.exit(true),
             _ => {}
         }
     }
@@ -124,8 +129,12 @@ impl ThemeChanger {
         new_cursor_pos.clamp(0, self.input.chars().count())
     }
 
-    fn exit(&mut self) {
+    fn exit(&mut self, restore_original: bool) {
         self.exit = true;
+
+        if restore_original {
+            let _ = fs::write(&self.config_path, self.config_table.to_string());
+        }
     }
 }
 
@@ -169,6 +178,13 @@ impl ThemeChanger {
         Ok(config_path.unwrap())
     }
 
+    fn read_config(&mut self) -> Result<Table> {
+        let contents = fs::read_to_string(&self.config_path)?;
+        let config: Table = contents.parse()?;
+
+        return Ok(config);
+    }
+
     fn scan_themes(&self) -> Result<Vec<PathBuf>> {
         let themes_dir = self.config_path.parent().unwrap().join("themes/themes");
         let files = fs::read_dir(themes_dir)?;
@@ -187,15 +203,70 @@ impl ThemeChanger {
             .collect::<Vec<_>>();
 
         // sort the entries alphabetically
-        paths.sort_by(|a, b| {
-            return a
-                .file_name()
-                .unwrap()
-                .to_ascii_lowercase()
-                .cmp(&b.file_name().unwrap().to_ascii_lowercase());
-        });
+        paths.sort_by(|a, b| b.cmp(a));
 
         return Ok(paths);
+    }
+
+    fn update_theme(&mut self) {
+        // select the first theme if no theme is selected
+        if self.state.selected().is_none() {
+            self.state.select_first();
+        }
+
+        // get the selected theme index and return if no theme is selected
+        let index = self.state.selected();
+        if index.is_none() {
+            return;
+        }
+
+        let items = self.get_matched_themes();
+
+        // check if the selected index is out of bounds
+        let index = index.unwrap();
+        if index >= items.len() {
+            return;
+        }
+
+        // get the selected theme
+        let theme = &items[index];
+
+        // clone to avoid mutating the original
+        let mut config_clone = self.config_table.clone();
+
+        // temporary values declared here to avoid them being dropped
+        let mut tmp_value = Value::Array(vec![]);
+        let mut tmp_array = Vec::new();
+
+        // get the current import array (or fallback to an empty array)
+        let import = config_clone
+            .get_mut("import")
+            .unwrap_or(&mut tmp_value)
+            .as_array_mut()
+            .unwrap_or(&mut tmp_array);
+
+        // clear the import array (if any) and push the selected theme
+        import.clear();
+        import.push(Value::String(theme.to_string_lossy().to_string()));
+
+        // write the updated config
+        let _ = fs::write(&self.config_path, config_clone.to_string());
+    }
+
+    fn get_matched_themes(&self) -> Vec<PathBuf> {
+        let mut items: Vec<_> = self
+            .themes
+            .iter()
+            .zip(self.themes.iter())
+            .map(|(o, p)| (o, p.file_name().unwrap().to_str().unwrap().to_string()))
+            .map(|(o, p)| (o, p.replace(".toml", "")))
+            .map(|(o, p)| (o, SkimMatcherV2::default().fuzzy_match(&p, &self.input)))
+            .filter(|(_, m)| m.is_some())
+            .collect();
+
+        items.sort_by_key(|(_, m)| m.unwrap());
+
+        return items.iter().rev().map(|(s, _)| s.to_path_buf()).collect();
     }
 }
 
@@ -208,16 +279,21 @@ impl Widget for &mut ThemeChanger {
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]);
         let [left_area, right_area] = horizontal.areas(messages_area);
 
-        let input = Paragraph::new(self.input.as_str())
-            .block(Block::bordered().title("Filter").border_set(border::PLAIN));
+        let input = Paragraph::new(self.input.as_str()).block(
+            Block::bordered()
+                .title("Filter")
+                .border_set(border::PLAIN)
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
         input.render(input_area, buf);
 
-        let items = self
-            .themes
+        let items = self.get_matched_themes();
+        let items: Vec<_> = items
             .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .filter_map(|s| s.file_name())
+            .filter_map(|s| s.to_str())
             .map(|s| s.replace(".toml", ""))
-            .filter(|s| s.contains(&self.input));
+            .collect();
 
         let msg = vec![
             "Press ".into(),
@@ -234,9 +310,8 @@ impl Widget for &mut ThemeChanger {
                     .title_bottom(msg)
                     .border_set(border::PLAIN),
             )
-            .style(Style::new().white())
             .highlight_style(Style::new().reversed())
-            .highlight_symbol(">>")
+            .highlight_symbol("")
             .repeat_highlight_symbol(true)
             .direction(ListDirection::TopToBottom);
 
