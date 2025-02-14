@@ -15,9 +15,18 @@ The first little project I decided to implement in Rust is a small command line 
 
 ## Used Crates
 
-- [toml](https://docs.rs/toml/latest/toml/) for parsing `.toml` files
+- [anyhow](https://docs.rs/anyhow/latest/anyhow/) for error handling
+- [fuzzy-matcher](https://docs.rs/fuzzy-matcher/latest/fuzzy_matcher/) for fuzzy search
 - [ratatui](https://docs.rs/ratatui/latest/ratatui/) for the interactive UI
+- [toml](https://docs.rs/toml/latest/toml/) for parsing `.toml` files
+- [xdg](https://docs.rs/xdg/latest/xdg/) for finding the `alacritty.toml` file in the known locations
+
+## Resources
+
+- [Alacritty](https://github.com/alacritty/alacritty) source code
+- Ratatui documentation, especially the [Counter App](https://ratatui.rs/tutorials/counter-app/basic-app/) and the [User Input](https://ratatui.rs/examples/apps/user_input/) examples
 
 ## Similar projects
 
 - [alacritty-theme-switcher](https://github.com/spacebird-dev/alacritty-theme-switcher) A simple tool to quickly switch between different themes for alacritty, with shell completion!
+  - This repo differs from the above in that it displays a TUI with fuzzy search and live preview, where as the project above is a CLI tool with no TUI
