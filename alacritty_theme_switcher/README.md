@@ -2,6 +2,8 @@
 
 The first little project I decided to implement in Rust is a small command line utility that allows you to switch themes for [Alacritty](https://alacritty.org/) terminal.
 
+![demo_image](./assets/alacritty_theme_switcher_demo.gif)
+
 ## Goals
 
 - Locate the `alacritty.toml` config file the known [locations](https://alacritty.org/config-alacritty.html#location)
