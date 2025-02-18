@@ -234,16 +234,29 @@ impl ThemeChanger {
         // clone to avoid mutating the original
         let mut config_clone = self.config_table.clone();
 
-        // temporary values declared here to avoid them being dropped
-        let mut tmp_value = Value::Array(vec![]);
-        let mut tmp_array = Vec::new();
+        // ensure the general section exists
+        if !config_clone.contains_key("general") {
+            config_clone.insert("general".to_string(), Value::Table(Table::new()));
+        }
 
-        // get the current import array (or fallback to an empty array)
-        let import = config_clone
+        // retrieve the general section
+        let general = config_clone
+            .get_mut("general")
+            .expect("[general] does not exist")
+            .as_table_mut()
+            .expect("[general] is not a table");
+
+        // ensure the import array exists in the general section
+        if !general.contains_key("import") {
+            general.insert("import".to_string(), Value::Array(vec![]));
+        }
+
+        // retrieve the import array from the general section
+        let import = general
             .get_mut("import")
-            .unwrap_or(&mut tmp_value)
+            .expect("[import] does not exist")
             .as_array_mut()
-            .unwrap_or(&mut tmp_array);
+            .expect("[import] is not an array");
 
         // clear the import array (if any) and push the selected theme
         import.clear();
