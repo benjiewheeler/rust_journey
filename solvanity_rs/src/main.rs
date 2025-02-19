@@ -68,12 +68,12 @@ fn main() {
                 // report every second
                 // also report every 1000 iterations (it makes a cleaner output)
                 if iterations % 1000 == 0 && last_report.elapsed().as_millis() > 1000 {
+                    // send the result to the main thread
+                    let _ = tx.send(Message::Iterations(iterations));
+
                     // reset the counter & timer
                     iterations = 0;
                     last_report = Instant::now();
-
-                    // send the result to the main thread
-                    let _ = tx.send(Message::Iterations(iterations));
                 }
 
                 // generate a new keypair and check if it matches the pattern
@@ -108,8 +108,9 @@ fn main() {
     // loop over the messages in the channel and print the data
     for msg in rx {
         match msg {
-            Message::Iterations(i) => {
-                total_iterations += i;
+            Message::Iterations(num) => {
+                total_iterations += num;
+
                 if last_report.elapsed().as_millis() > 1000 {
                     last_report = Instant::now();
 
