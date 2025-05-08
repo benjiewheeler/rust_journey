@@ -2,6 +2,7 @@
 name = "web_embed"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 actix-web = "4.10.2"
