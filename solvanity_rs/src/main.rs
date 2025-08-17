@@ -3,6 +3,7 @@ use fancy_regex::Regex;
 use num_format::{Locale, ToFormattedString};
 use solana_sdk::signer::{keypair::Keypair, Signer};
 use std::{
+    collections::VecDeque,
     fs,
     sync::mpsc,
     thread,
@@ -12,6 +13,54 @@ use std::{
 enum Message {
     Iterations(usize),
     Key(Keypair),
+}
+
+struct SpeedTracker {
+    recent_iterations: VecDeque<(Instant, usize)>,
+    window_duration: Duration,
+}
+
+impl SpeedTracker {
+    fn new(window_duration: Duration) -> Self {
+        SpeedTracker {
+            recent_iterations: VecDeque::new(),
+            window_duration,
+        }
+    }
+
+    fn add_iterations(&mut self, time: Instant, count: usize) {
+        self.recent_iterations.push_back((time, count));
+
+        // Remove old entries outside the time window
+        let cutoff = time - self.window_duration;
+        while let Some((first_time, _)) = self.recent_iterations.front() {
+            if first_time >= &cutoff {
+                break;
+            }
+
+            self.recent_iterations.pop_front();
+        }
+    }
+
+    fn calculate_speed(&self) -> f64 {
+        if self.recent_iterations.is_empty() {
+            return 0.0;
+        }
+
+        let total_iterations: usize = self.recent_iterations.iter().map(|(_, count)| count).sum();
+
+        if let (Some(first), Some(last)) = (
+            self.recent_iterations.front(),
+            self.recent_iterations.back(),
+        ) {
+            let duration = last.0 - first.0;
+            if duration.as_secs_f64() > 0.0 {
+                return total_iterations as f64 / duration.as_secs_f64();
+            }
+        }
+
+        return 0.0;
+    }
 }
 
 fn main() {
@@ -46,6 +95,8 @@ fn main() {
         }
     };
 
+    let mut speed_tracker = SpeedTracker::new(Duration::from_secs(5));
+
     // create a channel to communicate with the threads
     let (tx, rx) = mpsc::channel();
 
@@ -60,20 +111,17 @@ fn main() {
 
         thread::spawn(move || loop {
             let mut iterations: usize = 0;
-            let mut last_report = Instant::now();
 
             loop {
                 iterations += 1;
 
-                // report every second
-                // also report every 1000 iterations (it makes a cleaner output)
-                if iterations % 1000 == 0 && last_report.elapsed().as_millis() > 1000 {
+                // store datapoint every N iterations
+                if iterations % 1000 == 0 {
                     // send the result to the main thread
                     let _ = tx.send(Message::Iterations(iterations));
 
-                    // reset the counter & timer
+                    // reset the counter
                     iterations = 0;
-                    last_report = Instant::now();
                 }
 
                 // generate a new keypair and check if it matches the pattern
@@ -110,18 +158,19 @@ fn main() {
         match msg {
             Message::Iterations(num) => {
                 total_iterations += num;
+                speed_tracker.add_iterations(Instant::now(), num);
 
                 if last_report.elapsed().as_millis() > 1000 {
                     last_report = Instant::now();
 
                     let elapsed = Duration::from_millis(start_time.elapsed().as_millis() as u64);
-                    let speed = total_iterations as f64 / elapsed.as_secs_f64();
+                    let speed = speed_tracker.calculate_speed();
 
                     println!(
                         "Round: {}, Elapsed: {:?}, Speed: {} keys/sec",
                         total_iterations.to_formatted_string(&Locale::en),
                         elapsed,
-                        (speed as usize).to_formatted_string(&Locale::en)
+                        (speed as usize).to_formatted_string(&Locale::en),
                     );
                 }
             }
