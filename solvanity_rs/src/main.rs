@@ -1,4 +1,4 @@
-use clap::{command, value_parser, Arg};
+use clap::{command, value_parser, Arg, ValueEnum};
 use fancy_regex::Regex;
 use num_format::{Locale, ToFormattedString};
 use solana_sdk::signer::{keypair::Keypair, Signer};
@@ -9,6 +9,14 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+#[derive(Debug, Clone, ValueEnum)]
+enum Mode {
+    Regex,
+    Prefix,
+    Suffix,
+    Repeating,
+}
 
 enum Message {
     Iterations(usize),
@@ -63,37 +71,146 @@ impl SpeedTracker {
     }
 }
 
+fn save_key(kp: &Keypair) {
+    // write the base58 private key to a txt file
+    let _ = fs::write(
+        format!("key_{}.txt", kp.pubkey().to_string()),
+        format!("{}", kp.to_base58_string()),
+    );
+
+    // write the private key to a json file (to match the official solana cli)
+    let _ = fs::write(
+        format!("key_{}.json", kp.pubkey().to_string()),
+        serde_json::to_string(&kp.to_bytes().to_vec()).unwrap(),
+    );
+}
+
+fn check_key(
+    kp: &Keypair,
+    mode: &Mode,
+    pattern: &Regex,
+    word: &String,
+    ignore_case: bool,
+    count: &usize,
+) -> bool {
+    let pubkey = kp.pubkey().to_string();
+
+    match mode {
+        Mode::Regex => {
+            let res = pattern.find(&pubkey);
+
+            return res.is_ok() && res.unwrap().is_some();
+        }
+        Mode::Prefix => {
+            if ignore_case {
+                return pubkey
+                    .to_lowercase()
+                    .starts_with(word.to_lowercase().as_str());
+            }
+            return pubkey.starts_with(word);
+        }
+        Mode::Suffix => {
+            if ignore_case {
+                return pubkey
+                    .to_lowercase()
+                    .ends_with(word.to_lowercase().as_str());
+            }
+            return pubkey.ends_with(word);
+        }
+        Mode::Repeating => {
+            return pubkey
+                .chars()
+                .next()
+                .map(|first| pubkey.chars().take_while(|&c| c == first).count() >= *count)
+                .unwrap_or(false);
+        }
+    }
+}
+
 fn main() {
     // parse the command line arguments
     let matches = command!()
         .arg(
+            Arg::new("mode")
+                .long("mode")
+                .short('m')
+                .required(true)
+                .value_parser(value_parser!(Mode))
+                .help("The mode of operation"),
+        )
+        .arg(
             Arg::new("pattern")
                 .long("pattern")
                 .short('p')
-                .required(true),
+                .required_if_eq("mode", "regex")
+                .help("Pattern to match (required for regex mode)"),
+        )
+        .arg(
+            Arg::new("word")
+                .long("word")
+                .short('w')
+                .required_if_eq_any([("mode", "prefix"), ("mode", "suffix")])
+                .help("Word to use (required for prefix/suffix modes)"),
+        )
+        .arg(
+            Arg::new("ignore-case")
+                .long("ignore-case")
+                .short('i')
+                .num_args(0)
+                .default_value("false")
+                .value_parser(value_parser!(bool))
+                .help("Ignore case"),
+        )
+        .arg(
+            Arg::new("count")
+                .long("count")
+                .short('c')
+                .value_parser(value_parser!(usize))
+                .required_if_eq("mode", "repeating")
+                .help("Count for repeating (required for repeating mode)"),
         )
         .arg(
             Arg::new("limit")
                 .long("limit")
                 .short('l')
                 .default_value("1")
-                .value_parser(value_parser!(usize)),
+                .value_parser(value_parser!(usize))
+                .help("Limit results"),
         )
         .get_matches();
 
-    // get the pattern and limit arguments
-    let pattern = matches.get_one::<String>("pattern").expect("required");
-    let limit = matches.get_one::<usize>("limit").clone().unwrap().clone();
+    let mode = matches.get_one::<Mode>("mode").unwrap().clone();
+    let limit = matches.get_one::<usize>("limit").unwrap();
+    let mut pattern: Regex = Regex::new("").unwrap();
+    let mut word: String = String::new();
+    let mut ignore_case: bool = false;
+    let mut count: usize = 0;
 
-    // compile the pattern and validate it
-    let pattern = Regex::new(&pattern);
-    let pattern = match pattern {
-        Ok(pattern) => pattern,
-        Err(e) => {
-            println!("Invalid pattern: {}", e);
-            return;
+    match mode {
+        Mode::Regex => {
+            let pattern_str = matches.get_one::<String>("pattern").unwrap();
+
+            // compile the pattern and validate it
+            pattern = match Regex::new(&pattern_str) {
+                Ok(pattern) => pattern,
+                Err(e) => {
+                    println!("Invalid pattern: {}", e);
+                    return;
+                }
+            };
         }
-    };
+        Mode::Prefix => {
+            word = matches.get_one::<String>("word").unwrap().clone();
+            ignore_case = matches.get_one::<bool>("ignore-case").unwrap().clone();
+        }
+        Mode::Suffix => {
+            word = matches.get_one::<String>("word").unwrap().clone();
+            ignore_case = matches.get_one::<bool>("ignore-case").unwrap().clone();
+        }
+        Mode::Repeating => {
+            count = *matches.get_one::<usize>("count").unwrap();
+        }
+    }
 
     let mut speed_tracker = SpeedTracker::new(Duration::from_secs(5));
 
@@ -107,7 +224,11 @@ fn main() {
     for _ in 0..num_threads {
         // clone the variables so we can move them into the thread
         let tx = tx.clone();
+        let mode = mode.clone();
         let pattern = pattern.clone();
+        let word = word.clone();
+        let ignore_case = ignore_case.clone();
+        let count = count.clone();
 
         thread::spawn(move || loop {
             let mut iterations: usize = 0;
@@ -126,21 +247,9 @@ fn main() {
 
                 // generate a new keypair and check if it matches the pattern
                 let kp = Keypair::new();
-                let pubkey = kp.pubkey().to_string();
-                let res = pattern.find(&pubkey);
 
-                if res.is_ok() && res.unwrap().is_some() {
-                    // write the base58 private key to a txt file
-                    let _ = fs::write(
-                        format!("key_{}.txt", kp.pubkey().to_string()),
-                        format!("{}", kp.to_base58_string()),
-                    );
-
-                    // write the private key to a json file (to match the official solana cli)
-                    let _ = fs::write(
-                        format!("key_{}.json", kp.pubkey().to_string()),
-                        serde_json::to_string(&kp.to_bytes().to_vec()).unwrap(),
-                    );
+                if check_key(&kp, &mode, &pattern, &word, ignore_case, &count) {
+                    save_key(&kp);
 
                     // send the result to the main thread
                     let _ = tx.send(Message::Key(kp));
@@ -182,7 +291,7 @@ fn main() {
                 println!();
 
                 found_keys += 1;
-                if found_keys >= limit {
+                if found_keys >= *limit {
                     break;
                 }
             }
