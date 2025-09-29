@@ -177,10 +177,18 @@ fn main() {
                 .value_parser(value_parser!(usize))
                 .help("Limit results"),
         )
+        .arg(
+            Arg::new("threads")
+                .long("threads")
+                .short('t')
+                .value_parser(value_parser!(usize))
+                .help("Number of threads to use (default: machine thread count)"),
+        )
         .get_matches();
 
     let mode = matches.get_one::<Mode>("mode").unwrap().clone();
     let limit = matches.get_one::<usize>("limit").unwrap();
+    let threads = matches.get_one::<usize>("threads").unwrap_or(&0);
     let mut pattern: Regex = Regex::new("").unwrap();
     let mut word: String = String::new();
     let mut ignore_case: bool = false;
@@ -218,10 +226,16 @@ fn main() {
     let (tx, rx) = mpsc::channel();
 
     let start_time = Instant::now();
-    let num_threads = thread::available_parallelism().unwrap().get();
+    let num_threads = if *threads > 0 {
+        *threads
+    } else {
+        thread::available_parallelism().unwrap().get()
+    };
 
     // create the threads
-    for _ in 0..num_threads {
+    for i in 0..num_threads {
+        let core_id = i % num_threads;
+
         // clone the variables so we can move them into the thread
         let tx = tx.clone();
         let mode = mode.clone();
@@ -230,7 +244,10 @@ fn main() {
         let ignore_case = ignore_case.clone();
         let count = count.clone();
 
-        thread::spawn(move || loop {
+        let _ = thread::Builder::new().spawn(move || loop {
+            // Pin this OS thread to `core_id`.
+            affinity::set_thread_affinity([core_id]).expect("failed to set thread affinity");
+
             let mut iterations: usize = 0;
 
             loop {
