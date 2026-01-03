@@ -1,0 +1,15 @@
+[package]
+name = "term-clock"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "term-clock"
+path = "src/main.rs"
+
+[dependencies]
+chrono = "0.4.42"
+clap = { version = "4.5.53", features = ["cargo", "derive"] }
+crossterm = "0.29.0"
+ratatui = "0.30.0"
+tui-big-text = "0.8.1"
